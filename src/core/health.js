@@ -207,6 +207,20 @@ export async function launch({ port, kill_existing } = {}) {
     } catch { /* ignore */ }
   }
 
+  if (!tvPath && platform === 'win32') {
+    // Microsoft Store (MSIX/UWP) installs live under WindowsApps, not the static paths above.
+    try {
+      const found = execSync(
+        'powershell -NoProfile -Command "(Get-AppxPackage *TradingView*).InstallLocation"',
+        { timeout: 10000 }
+      ).toString().trim().split('\n')[0].trim();
+      if (found) {
+        const candidate = `${found}\\TradingView.exe`;
+        if (existsSync(candidate)) tvPath = candidate;
+      }
+    } catch { /* ignore */ }
+  }
+
   if (!tvPath) {
     throw new Error(`TradingView not found on ${platform}. Searched: ${candidates.join(', ')}. Launch manually with: /path/to/TradingView --remote-debugging-port=${cdpPort}`);
   }
