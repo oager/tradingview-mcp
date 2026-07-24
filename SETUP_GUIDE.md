@@ -45,10 +45,28 @@ Mac:
 /Applications/TradingView.app/Contents/MacOS/TradingView --remote-debugging-port=9222
 ```
 
-Windows:
+Windows (classic installer):
 ```bash
 %LOCALAPPDATA%\TradingView\TradingView.exe --remote-debugging-port=9222
 ```
+
+Windows (Microsoft Store / MSIX — what `winget install TradingView.TradingViewDesktop` gives you):
+There is no `%LOCALAPPDATA%\TradingView\` directory at all; the app lives under the ACL-protected
+`C:\Program Files\WindowsApps\`, so launching that path directly can fail with Access Denied. Use
+packaged-app activation instead:
+```powershell
+$pkg   = Get-AppxPackage *TradingView*
+$appid = (Get-AppxPackageManifest $pkg).Package.Applications.Application.Id   # TradingView.Desktop
+Stop-Process -Name TradingView -Force        # Electron is single-instance: the debug port
+                                             # cannot be added to an already-running TV
+Start-Process "shell:AppsFolder\$($pkg.PackageFamilyName)!$appid" -ArgumentList "--remote-debugging-port=9222"
+```
+`Start-Process` on `shell:AppsFolder\<PackageFamilyName>!<AppId>` passes `-ArgumentList` through to a
+packaged Electron app; `Invoke-CommandInDesktopPackage` silently does not launch. Confirm with
+`curl http://localhost:9222/json/version`.
+
+(`tv_launch` auto-detects MSIX installs via `Get-AppxPackage`, so it works on a normal user token —
+but it launches the exe directly, which is blocked from inside a packaged-app container.)
 
 Linux:
 ```bash
