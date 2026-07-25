@@ -233,8 +233,27 @@ export async function launch({ port, kill_existing } = {}) {
     } catch { /* may not be running */ }
   }
 
-  const child = spawn(tvPath, [`--remote-debugging-port=${cdpPort}`], { detached: true, stdio: 'ignore' });
-  child.unref();
+  // MSIX/Store installs sit under ACL-protected Program Files\WindowsApps\. Spawning that exe
+  // path directly works on a normal user token but fails with Access Denied from a restricted /
+  // packaged-app container token. shell:AppsFolder activation launches via the Store shim and
+  // passes -ArgumentList through (Invoke-CommandInDesktopPackage silently does not), and works on
+  // both token types. Classic-installer paths keep the direct spawn.
+  const useAppsFolder = platform === 'win32' && /\\WindowsApps\\/i.test(tvPath);
+  let child = null;
+  if (useAppsFolder) {
+    const ps =
+      '$pkg = Get-AppxPackage *TradingView*; ' +
+      '$appid = (Get-AppxPackageManifest $pkg).Package.Applications.Application.Id; ' +
+      `Start-Process ("shell:AppsFolder\\" + $pkg.PackageFamilyName + "!" + $appid) -ArgumentList "--remote-debugging-port=${cdpPort}"`;
+    child = spawn('powershell', ['-NoProfile', '-Command', ps], { detached: true, stdio: 'ignore' });
+    child.unref();
+  } else {
+    child = spawn(tvPath, [`--remote-debugging-port=${cdpPort}`], { detached: true, stdio: 'ignore' });
+    child.unref();
+  }
+  // On the AppsFolder path child is the transient powershell launcher, not TV itself.
+  const launchPid = useAppsFolder ? null : child.pid;
+  const launchMethod = useAppsFolder ? 'appsfolder' : 'direct';
 
   for (let i = 0; i < 15; i++) {
     await new Promise(r => setTimeout(r, 1000));
@@ -250,7 +269,7 @@ export async function launch({ port, kill_existing } = {}) {
       if (ready) {
         const info = JSON.parse(ready);
         return {
-          success: true, platform, binary: tvPath, pid: child.pid,
+          success: true, platform, binary: tvPath, pid: launchPid, launch_method: launchMethod,
           cdp_port: cdpPort, cdp_url: `http://localhost:${cdpPort}`,
           browser: info.Browser, user_agent: info['User-Agent'],
         };
@@ -259,7 +278,7 @@ export async function launch({ port, kill_existing } = {}) {
   }
 
   return {
-    success: true, platform, binary: tvPath, pid: child.pid, cdp_port: cdpPort, cdp_ready: false,
+    success: true, platform, binary: tvPath, pid: launchPid, launch_method: launchMethod, cdp_port: cdpPort, cdp_ready: false,
     warning: 'TradingView launched but CDP not responding yet. It may still be loading. Try tv_health_check in a few seconds.',
   };
 }
