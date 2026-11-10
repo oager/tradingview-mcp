@@ -106,18 +106,72 @@ export async function create({ condition, price, message }) {
   let parsed = null;
   try { parsed = JSON.parse(text); } catch {}
 
-  const ok = resp.ok && parsed && parsed.s === 'ok';
+  const created = resp.ok && parsed && parsed.s === 'ok';
+  const alertId = parsed?.r?.alert_id || null;
+
+  // 5. A 200 from create_alert does NOT mean the alert is armed. New alerts read
+  // active:false for a few seconds (measured 2026-11-10: false at +0s, true at +3s), and
+  // one ONDO alert was still false at +6s. Wait for it, then restart once if it never arms.
+  let active = null;
+  let restarted = false;
+  if (created && alertId) {
+    active = await waitActive(alertId);
+    if (!active) {
+      restarted = true;
+      await pricealertsPost('restart_alerts', { alert_ids: [alertId] }, cookieHeader);
+      active = await waitActive(alertId);
+    }
+  }
+
+  const ok = created && active === true;
+  let error = null;
+  if (!created) error = parsed?.errmsg || text.slice(0, 300);
+  else if (!active) error = 'Alert created but NOT active after a restart -- switch it on in the TradingView Alerts panel';
   return {
     success: ok,
     status: resp.status,
-    alert_id: parsed?.r?.alert_id || null,
+    alert_id: alertId,
+    active,
+    restarted,
     symbol: symCtx.symbol,
     price: priceNum,
     condition: conditionType,
     message: payload.payload.message,
-    error: ok ? null : (parsed?.errmsg || text.slice(0, 300)),
+    error,
     source: 'rest_api',
   };
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Poll list_alerts until the alert reads active:true. ~10s max. */
+async function waitActive(alertId, tries = 5, gapMs = 2000) {
+  for (let i = 0; i < tries; i++) {
+    const { alerts } = await list();
+    if (alerts.find((a) => a.alert_id === alertId)?.active === true) return true;
+    if (i < tries - 1) await sleep(gapMs);
+  }
+  return false;
+}
+
+/** POST to the pricealerts REST API from Node (page-context fetch is CORS-blocked). */
+async function pricealertsPost(endpoint, payload, cookieHeader) {
+  const resp = await fetch(`https://pricealerts.tradingview.com/${endpoint}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      'Origin': 'https://www.tradingview.com',
+      'Referer': 'https://www.tradingview.com/chart/',
+      'User-Agent': 'Mozilla/5.0 (TradingView-MCP)',
+      'Cookie': cookieHeader,
+    },
+    body: JSON.stringify({ payload }),
+  });
+  const text = await resp.text();
+  let parsed = null;
+  try { parsed = JSON.parse(text); } catch {}
+  return { ok: resp.ok && parsed?.s === 'ok', status: resp.status, text: text.slice(0, 300) };
 }
 
 export async function list() {
