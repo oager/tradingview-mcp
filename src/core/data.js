@@ -246,9 +246,17 @@ export async function getQuote({ symbol } = {}) {
   const data = await evaluate(`
     (function() {
       var api = ${CHART_API};
-      var sym = ${safeString(symbol || '')};
-      if (!sym) { try { sym = api.symbol(); } catch(e) {} }
-      if (!sym) { try { sym = api.symbolExt().symbol; } catch(e) {} }
+      var requested = ${safeString(symbol || '')};
+      var chartSym = '';
+      try { chartSym = api.symbol(); } catch(e) {}
+      if (!chartSym) { try { chartSym = api.symbolExt().symbol; } catch(e) {} }
+      // getQuote reads the CHARTED symbol's bars/ext below. A different requested
+      // symbol would return chart data mislabeled as it — silent wrong data. Refuse.
+      function _root(s){ s=(s||'').toUpperCase(); var i=s.lastIndexOf(':'); if(i>=0) s=s.slice(i+1); return s.replace(/\\.P$/,'').replace(/(USDT|USDC|USD|PERP)$/,''); }
+      if (requested && chartSym && _root(requested) !== _root(chartSym)) {
+        return { _mismatch: true, requested: requested, charted: chartSym };
+      }
+      var sym = requested || chartSym;
       var ext = {};
       try { ext = api.symbolExt() || {}; } catch(e) {}
       var bars = ${BARS_PATH};
@@ -273,6 +281,9 @@ export async function getQuote({ symbol } = {}) {
       return quote;
     })()
   `);
+  if (data && data._mismatch) {
+    return { success: false, error: `quote_get only reads the charted symbol — requested "${data.requested}" but the chart shows "${data.charted}". Call chart_set_symbol first, or use watchlist_get for prices without switching.`, charted_symbol: data.charted };
+  }
   if (!data || (!data.last && !data.close)) throw new Error('Could not retrieve quote. The chart may still be loading.');
   return { success: true, ...data };
 }
